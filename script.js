@@ -170,6 +170,21 @@
     return { id: id, label: p.label, w: p.w, h: p.h, mode: p.mode };
   }
 
+  function getExportDimensions(presetId) {
+    var preset = EXPORT_PRESETS[presetId];
+    if (!preset) {
+      preset = EXPORT_PRESETS['xhs_3_4']; // 默认值
+    }
+    
+    if (preset.mode === 'fitWidth' || preset.h == null) {
+      // 对于微博长图模式，高度应根据内容确定
+      return { width: preset.w, height: null };
+    }
+    
+    // 对于其他模式，返回固定宽高
+    return { width: preset.w, height: preset.h };
+  }
+
   /** 将 html2canvas 结果缩放为预设像素（contain 留白 / fitWidth 仅限宽） */
   function resizeCanvasToExport(srcCanvas, preset, bgHex) {
     var sw = srcCanvas.width;
@@ -490,6 +505,11 @@
     if (imageActionModal) {
       imageActionModal.classList.remove('is-open');
       imageActionModal.setAttribute('aria-hidden', 'true');
+      // 移除焦点以避免无障碍性问题
+      const activeElement = document.activeElement;
+      if (activeElement && imageActionModal.contains(activeElement)) {
+        activeElement.blur();
+      }
     }
   }
 
@@ -505,6 +525,11 @@
     if (cropModal) {
       cropModal.classList.remove('is-open');
       cropModal.setAttribute('aria-hidden', 'true');
+      // 移除焦点以避免无障碍性问题
+      const activeElement = document.activeElement;
+      if (activeElement && cropModal.contains(activeElement)) {
+        activeElement.blur();
+      }
     }
     destroyCropperIfAny();
     if (cropTarget) {
@@ -518,10 +543,24 @@
    * @param {string} [forcedDataUrl] 新选图时传入，先裁剪再写入该行
    */
   function openCropModal(rowIndex, forcedDataUrl) {
+    // 检查 Cropper 是否可用
     if (typeof Cropper === 'undefined') {
-      alert('裁剪库未加载，请检查网络后重试。');
+      console.error('Cropper 未定义，尝试从 window.Cropper 获取...');
+      console.log('window 对象:', typeof window);
+      console.log('window.Cropper:', typeof window.Cropper);
+      
+      // 等待一小段时间重试
+      setTimeout(function() {
+        if (typeof Cropper === 'undefined' && typeof window.Cropper !== 'undefined') {
+          Cropper = window.Cropper;
+          openCropModal(rowIndex, forcedDataUrl);
+        } else {
+          alert('裁剪功能不可用，请检查网络连接后重试。');
+        }
+      }, 500);
       return;
     }
+    
     if (rowIndex < 0 || rowIndex >= tableData.length) return;
     var src =
       forcedDataUrl != null && forcedDataUrl !== ''
@@ -813,79 +852,176 @@
     renderTable();
   }
 
-  function exportImage() {
-    if (typeof html2canvas !== 'function') {
-      alert('html2canvas 未加载，请检查网络后重试。');
+  function downloadBlob(blob, filename, format) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    
+    document.body.appendChild(link);
+    link.click();
+    
+    setTimeout(function() {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }
+
+  async function exportImage() {
+    const captureEl = document.getElementById('captureArea');
+    if (!captureEl) {
+      console.error('找不到截图元素 #captureArea');
+      alert('导出失败：找不到预览区域');
       return;
     }
-    if (!captureArea) {
-      alert('找不到预览区域。');
-      return;
-    }
 
-    var fmt = exportFormat && exportFormat.value === 'jpeg' ? 'jpeg' : 'png';
-    var mime = fmt === 'jpeg' ? 'image/jpeg' : 'image/png';
-    var bgHex = meta.bgBaseTone === 'black' ? '#0a0a0a' : '#ffffff';
-    var preset = getActiveExportPreset();
+    const format = document.getElementById('exportFormat').value;
+    const presetId = document.getElementById('exportPreset').value;
+    const preset = EXPORT_PRESETS[presetId] || EXPORT_PRESETS['xhs_3_4'];
 
-    document.body.classList.add('is-exporting');
+    // 临时创建一个专门用于导出的容器，避免样式冲突
+    const exportContainer = document.createElement('div');
+    exportContainer.id = 'temp-export-container';
+    
+    // 对于固定高度的预设，使用预设高度；对于自适应高度的预设，初始高度设为较大值，后面再调整
+    const containerHeight = (preset.mode === 'fitWidth' || preset.h == null) ? Math.max(2000, captureEl.scrollHeight) : preset.h;
+    
+    exportContainer.style.cssText = `
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: ${preset.w}px;
+      min-height: ${containerHeight}px;
+      background: #ffffff;
+      padding: 28px 36px 40px;
+      z-index: 9999;
+      visibility: hidden;
+      pointer-events: none;
+      font-family: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      color: #1e293b;
+      box-sizing: border-box;
+    `;
 
-    function runCapture() {
-      var sw = Math.max(1, captureArea.scrollWidth || captureArea.offsetWidth);
-      var targetW = preset.w || 1080;
-      var scale = Math.min(2.25, Math.max(1.5, Math.ceil(targetW / sw)));
+    // 克隆内容
+    const clonedContent = captureEl.cloneNode(true);
+    clonedContent.id = 'cloned-for-export';
+    clonedContent.style.cssText = `
+      width: 100%;
+      min-height: auto;
+      background: #ffffff;
+      position: relative;
+      margin: 0;
+      visibility: visible;
+      opacity: 1;
+      box-shadow: none;
+      transform: none;
+      display: block;
+      max-width: none;
+      max-height: none;
+      overflow: visible;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      color: inherit;
+    `;
 
-      html2canvas(captureArea, {
-        scale: scale,
+    // 处理需要隐藏的元素
+    const hideEls = clonedContent.querySelectorAll('.hide-on-export, .image-controls, .row-resize-handle, .col-resize-handle');
+    hideEls.forEach(el => {
+      el.style.display = 'none';
+    });
+
+    // 确保所有内容可见
+    const allElements = clonedContent.querySelectorAll('*');
+    allElements.forEach(el => {
+      if (el.style.display === 'none') return;
+      if (el.tagName === 'IMG' && !el.src) {
+        el.style.display = 'none';
+      }
+    });
+
+    // 特别处理表格中的富文本内容
+    const richCells = clonedContent.querySelectorAll('.rich-cell');
+    richCells.forEach(cell => {
+      // 确保富文本内容可见
+      if (!cell.innerHTML || cell.innerHTML.trim() === '') {
+        cell.innerHTML = '<p>（无内容）</p>';
+      }
+      // 保留内容但隐藏编辑相关的属性
+      cell.contentEditable = 'false';
+      cell.removeAttribute('data-placeholder');
+    });
+
+    exportContainer.appendChild(clonedContent);
+    document.body.appendChild(exportContainer);
+
+    // 等待内容渲染
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    try {
+      // 使用 html2canvas 截图克隆的内容
+      const canvas = await html2canvas(exportContainer, {
+        scale: 2,
+        backgroundColor: '#ffffff',
         useCORS: true,
         allowTaint: true,
-        backgroundColor: bgHex,
         logging: false,
-        foreignObjectRendering: false,
-        onclone: function (clonedDoc) {
-          var el = clonedDoc.getElementById('captureArea');
-          if (!el) return;
-          el.style.opacity = '1';
-          el.style.visibility = 'visible';
-          el.style.transform = 'none';
-          var inner = el.querySelector('.preview-content');
-          if (inner) {
-            inner.style.opacity = '1';
-            inner.style.visibility = 'visible';
-          }
-          var layer = el.querySelector('.preview-bg-layer');
-          if (layer) layer.style.display = meta.bgImageSrc ? 'block' : 'none';
+        width: exportContainer.offsetWidth,
+        height: exportContainer.scrollHeight,  // 使用实际滚动高度
+        foreignObjectRendering: true,
+        ignoreElements: (element) => {
+          return element.classList.contains('hide-on-export');
         },
-      })
-        .then(function (canvas) {
-          if (!canvas || canvas.width < 2 || canvas.height < 2) {
-            alert('导出画布无效，请重试或刷新页面。');
-            return;
-          }
-          var out = resizeCanvasToExport(canvas, preset, bgHex);
-          var quality = fmt === 'jpeg' ? 0.92 : undefined;
-          var dataUrl =
-            quality != null ? out.toDataURL(mime, quality) : out.toDataURL(mime);
-          var link = document.createElement('a');
-          var suffix = preset.mode === 'fitWidth' ? preset.w + 'w' : preset.w + 'x' + preset.h;
-          link.download = '角色印象表_' + preset.id + '_' + suffix + '.' + (fmt === 'jpeg' ? 'jpg' : 'png');
-          link.href = dataUrl;
-          link.click();
-        })
-        .catch(function (err) {
-          console.error(err);
-          alert('导出失败：' + (err && err.message ? err.message : '请稍后重试。'));
-        })
-        .finally(function () {
-          document.body.classList.remove('is-exporting');
-        });
-    }
-
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        setTimeout(runCapture, 80);
+        // 确保所有元素都正确渲染
+        onclone: (clonedDoc) => {
+          // 在克隆文档中确保所有元素可见
+          const allClonedElements = clonedDoc.querySelectorAll('*');
+          allClonedElements.forEach(el => {
+            if (el.style && el.style.display === 'none' && 
+                (el.classList.contains('hide-on-export') || 
+                 el.classList.contains('image-controls') ||
+                 el.classList.contains('row-resize-handle'))) {
+              // 这些元素应该保持隐藏
+            } else if (el.style) {
+              // 确保其他元素可见
+              if (el.style.display === 'none') el.style.display = 'block';
+              if (el.style.visibility === 'hidden') el.style.visibility = 'visible';
+              if (el.style.opacity === '0') el.style.opacity = '1';
+            }
+          });
+        }
       });
-    });
+
+      // 根据预设尺寸缩放画布
+      const finalCanvas = resizeCanvasToExport(canvas, preset, '#ffffff');
+
+      // 生成图片
+      const blob = await new Promise(resolve => {
+        const mime = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+        const quality = format === 'jpeg' ? 0.92 : 0.95;
+        finalCanvas.toBlob(resolve, mime, quality);
+      });
+
+      if (blob && blob.size > 0) {
+        const suffix = preset.mode === 'fitWidth' ? preset.w + 'w' : preset.w + 'x' + preset.h;
+        const filename = `角色印象表_${presetId}_${suffix}.${format === 'jpeg' ? 'jpg' : 'png'}`;
+        downloadBlob(blob, filename, format);
+      } else {
+        alert('导出失败：生成的图片为空');
+      }
+    } catch (error) {
+      console.error('导出错误:', error);
+      alert('导出失败：' + error.message);
+    } finally {
+      // 清理临时容器
+      if (exportContainer.parentNode) {
+        exportContainer.parentNode.removeChild(exportContainer);
+      }
+    }
   }
 
   function bindMetaInputs() {
