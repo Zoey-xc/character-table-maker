@@ -1,0 +1,1137 @@
+/**
+ * 角色初印象表格 — 左预览 / 右编辑、裁剪、双列富文本、导出
+ */
+
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'characterImpressionTable_v2';
+  var CROP_MAX_EDGE = 1200;
+
+  /**
+   * 社交平台常见导出尺寸（宽×高，像素）。mode: contain=整图缩放留白；fitWidth=固定宽、高随内容。
+   */
+  var EXPORT_PRESETS = {
+    xhs_3_4: { label: '小红书 笔记 3:4', w: 1080, h: 1440, mode: 'contain' },
+    xhs_4_5: { label: '小红书 竖图 4:5', w: 1080, h: 1350, mode: 'contain' },
+    xhs_1_1: { label: '小红书 / 微博 方形 1:1', w: 1080, h: 1080, mode: 'contain' },
+    weibo_long: { label: '微博 长图（宽 1080）', w: 1080, h: null, mode: 'fitWidth' },
+    story_9_16: { label: '竖屏动态 9:16', w: 1080, h: 1920, mode: 'contain' },
+  };
+
+  /** @type {{ workTitle: string, filledBy: string, madeBy: string, bgBaseTone: string, bgImageSrc: string, bgOpacity: number, imageColWidthPct: number, exportPreset: string }} */
+  var meta = {};
+
+  /** @type {{ imgSrc: string, richFirst: string, richCurrent: string, rowMinHeight: number }[]} */
+  var tableData = [];
+
+  var currentRichCell = null;
+  var pendingUploadRowIndex = -1;
+  var pendingImageActionRowIndex = -1;
+  var cropRowIndex = -1;
+  /** @type {{ destroy: function(): void, getCroppedCanvas: function(Object): HTMLCanvasElement }|null} */
+  var cropperInstance = null;
+  var savedSelectionRange = null;
+  /** 裁剪弹窗使用临时图（先裁后写入） */
+  var cropForceSrc = null;
+  /** 列宽拖动 */
+  var colDrag = null;
+  /** 行高拖动 */
+  var rowDrag = null;
+
+  function getDefaultMeta() {
+    return {
+      workTitle: '',
+      filledBy: '',
+      madeBy: '',
+      bgBaseTone: 'white',
+      bgImageSrc: '',
+      bgOpacity: 40,
+      imageColWidthPct: 38,
+      exportPreset: 'xhs_3_4',
+    };
+  }
+
+  function defaultRows() {
+    return [
+      normalizeRow({
+        imgSrc: '',
+        richFirst: '<p><strong>示例角色</strong> 这是初印象描述...</p>',
+        richCurrent: '<p></p>',
+        rowMinHeight: 0,
+      }),
+      normalizeRow({
+        imgSrc: '',
+        richFirst: '<p>新角色</p>',
+        richCurrent: '<p></p>',
+        rowMinHeight: 0,
+      }),
+    ];
+  }
+
+  var tableBody = document.getElementById('tableBody');
+  var mainTable = document.getElementById('mainTable');
+  var colImageWidthCol = document.getElementById('colImageWidth');
+  var colResizeHandle = document.getElementById('colResizeHandle');
+  var captureArea = document.getElementById('captureArea');
+  var previewBgLayer = document.getElementById('previewBgLayer');
+  var workTitle = document.getElementById('workTitle');
+  var filledBy = document.getElementById('filledBy');
+  var madeBy = document.getElementById('madeBy');
+  var bgBaseTone = document.getElementById('bgBaseTone');
+  var bgOpacity = document.getElementById('bgOpacity');
+  var bgOpacityVal = document.getElementById('bgOpacityVal');
+  var btnBgImage = document.getElementById('btnBgImage');
+  var btnClearBg = document.getElementById('btnClearBg');
+  var btnAddRow = document.getElementById('btnAddRow');
+  var btnRemoveRow = document.getElementById('btnRemoveRow');
+  var btnExport = document.getElementById('btnExport');
+  var exportFormat = document.getElementById('exportFormat');
+  var exportPreset = document.getElementById('exportPreset');
+  var previewPresetBadge = document.getElementById('previewPresetBadge');
+  var previewDeviceScreen = document.getElementById('previewDeviceScreen');
+  var hiddenFileInput = document.getElementById('hiddenFileInput');
+  var hiddenBgInput = document.getElementById('hiddenBgInput');
+  var btnBold = document.getElementById('btnBold');
+  var btnItalic = document.getElementById('btnItalic');
+  var btnUnderline = document.getElementById('btnUnderline');
+  var btnFontInc = document.getElementById('btnFontInc');
+  var btnFontDec = document.getElementById('btnFontDec');
+  var colorPicker = document.getElementById('colorPicker');
+  var imageActionModal = document.getElementById('imageActionModal');
+  var btnImageReplace = document.getElementById('btnImageReplace');
+  var btnImageCrop = document.getElementById('btnImageCrop');
+  var btnImageActionCancel = document.getElementById('btnImageActionCancel');
+  var cropModal = document.getElementById('cropModal');
+  var cropTarget = document.getElementById('cropTarget');
+  var btnCropCancel = document.getElementById('btnCropCancel');
+  var btnCropConfirm = document.getElementById('btnCropConfirm');
+
+  var PL_FIRST = '双击编辑初印象…';
+
+  function saveToLocalStorage() {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ meta: meta, rows: tableData })
+      );
+    } catch (e) {
+      console.warn('localStorage 保存失败:', e);
+    }
+  }
+
+  function normalizeRow(row) {
+    var first =
+      row.richFirst != null
+        ? row.richFirst
+        : row.richText != null
+          ? row.richText
+          : '<p></p>';
+    var current = row.richCurrent != null ? row.richCurrent : '<p></p>';
+    var rh = row.rowMinHeight;
+    if (typeof rh !== 'number' || isNaN(rh) || rh < 0) rh = 0;
+    if (rh > 1600) rh = 1600;
+    return {
+      imgSrc: typeof row.imgSrc === 'string' ? row.imgSrc : '',
+      richFirst: typeof first === 'string' ? first : '<p></p>',
+      richCurrent: typeof current === 'string' ? current : '<p></p>',
+      rowMinHeight: Math.round(rh),
+    };
+  }
+
+  function normalizeMeta(m) {
+    var d = getDefaultMeta();
+    if (!m || typeof m !== 'object') return d;
+    return {
+      workTitle: typeof m.workTitle === 'string' ? m.workTitle : d.workTitle,
+      filledBy: typeof m.filledBy === 'string' ? m.filledBy : d.filledBy,
+      madeBy: typeof m.madeBy === 'string' ? m.madeBy : d.madeBy,
+      bgBaseTone: m.bgBaseTone === 'black' ? 'black' : 'white',
+      bgImageSrc: typeof m.bgImageSrc === 'string' ? m.bgImageSrc : '',
+      bgOpacity:
+        typeof m.bgOpacity === 'number' && m.bgOpacity >= 0 && m.bgOpacity <= 100
+          ? Math.round(m.bgOpacity)
+          : d.bgOpacity,
+      imageColWidthPct:
+        typeof m.imageColWidthPct === 'number' && m.imageColWidthPct >= 22 && m.imageColWidthPct <= 62
+          ? Math.round(m.imageColWidthPct * 10) / 10
+          : d.imageColWidthPct,
+      exportPreset:
+        typeof m.exportPreset === 'string' && EXPORT_PRESETS[m.exportPreset]
+          ? m.exportPreset
+          : d.exportPreset,
+    };
+  }
+
+  function getActiveExportPreset() {
+    var id = meta.exportPreset;
+    if (!EXPORT_PRESETS[id]) id = 'xhs_3_4';
+    var p = EXPORT_PRESETS[id];
+    return { id: id, label: p.label, w: p.w, h: p.h, mode: p.mode };
+  }
+
+  /** 将 html2canvas 结果缩放为预设像素（contain 留白 / fitWidth 仅限宽） */
+  function resizeCanvasToExport(srcCanvas, preset, bgHex) {
+    var sw = srcCanvas.width;
+    var sh = srcCanvas.height;
+    if (sw <= 0 || sh <= 0) return srcCanvas;
+
+    if (preset.mode === 'fitWidth' || preset.h == null) {
+      var tw = preset.w;
+      var th = Math.max(1, Math.round(sh * (tw / sw)));
+      var outW = document.createElement('canvas');
+      outW.width = tw;
+      outW.height = th;
+      var ctxW = outW.getContext('2d');
+      if (!ctxW) return srcCanvas;
+      ctxW.fillStyle = bgHex;
+      ctxW.fillRect(0, 0, tw, th);
+      ctxW.drawImage(srcCanvas, 0, 0, sw, sh, 0, 0, tw, th);
+      return outW;
+    }
+
+    var tw = preset.w;
+    var th = preset.h;
+    var scale = Math.min(tw / sw, th / sh);
+    var dw = Math.max(1, Math.round(sw * scale));
+    var dh = Math.max(1, Math.round(sh * scale));
+    var ox = Math.floor((tw - dw) / 2);
+    var oy = Math.floor((th - dh) / 2);
+    var out = document.createElement('canvas');
+    out.width = tw;
+    out.height = th;
+    var ctx = out.getContext('2d');
+    if (!ctx) return srcCanvas;
+    ctx.fillStyle = bgHex;
+    ctx.fillRect(0, 0, tw, th);
+    ctx.drawImage(srcCanvas, 0, 0, sw, sh, ox, oy, dw, dh);
+    return out;
+  }
+
+  function applyExportPresetFrame() {
+    var p = getActiveExportPreset();
+    if (previewPresetBadge) {
+      previewPresetBadge.textContent =
+        p.mode === 'fitWidth'
+          ? p.label + ' · 宽 ' + p.w + 'px（高随内容）'
+          : p.label + ' · ' + p.w + '×' + p.h;
+    }
+    if (previewDeviceScreen) {
+      previewDeviceScreen.classList.toggle('preview-screen--fluid', p.mode === 'fitWidth');
+      if (p.mode === 'fitWidth') {
+        previewDeviceScreen.style.aspectRatio = '';
+      } else {
+        previewDeviceScreen.style.aspectRatio = String(p.w) + ' / ' + String(p.h);
+      }
+    }
+  }
+
+  function loadFromLocalStorage() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return { meta: getDefaultMeta(), rows: parsed.map(normalizeRow) };
+      }
+      if (parsed && Array.isArray(parsed.rows)) {
+        return {
+          meta: normalizeMeta(parsed.meta),
+          rows: parsed.rows.length ? parsed.rows.map(normalizeRow) : defaultRows(),
+        };
+      }
+    } catch (e) {
+      console.warn('localStorage 读取失败:', e);
+    }
+    return null;
+  }
+
+  /** 兼容旧版仅保存行数组的 v1 数据 */
+  function loadLegacyV1() {
+    try {
+      var raw = localStorage.getItem('characterImpressionTable_v1');
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.length) return null;
+      return { meta: getDefaultMeta(), rows: parsed.map(normalizeRow) };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function pushMetaToInputs() {
+    if (workTitle) workTitle.value = meta.workTitle;
+    if (filledBy) filledBy.value = meta.filledBy;
+    if (madeBy) madeBy.value = meta.madeBy;
+    if (bgBaseTone) bgBaseTone.value = meta.bgBaseTone;
+    if (bgOpacity) bgOpacity.value = String(meta.bgOpacity);
+    if (bgOpacityVal) bgOpacityVal.textContent = meta.bgOpacity + '%';
+    if (exportPreset) exportPreset.value = meta.exportPreset;
+    applyImageColPct();
+  }
+
+  function applyImageColPct() {
+    var pct = meta.imageColWidthPct;
+    var rest = Math.max(38, 100 - pct);
+    if (colImageWidthCol) colImageWidthCol.style.width = pct + '%';
+    var textCol = mainTable && mainTable.querySelector('.col-w-text');
+    if (textCol) textCol.style.width = rest + '%';
+  }
+
+  function applyPreviewStyles() {
+    if (!captureArea) return;
+    captureArea.classList.toggle('sheet-tone-black', meta.bgBaseTone === 'black');
+    if (previewBgLayer) {
+      if (meta.bgImageSrc) {
+        previewBgLayer.style.backgroundImage =
+          'url(' + JSON.stringify(meta.bgImageSrc) + ')';
+        previewBgLayer.style.display = 'block';
+      } else {
+        previewBgLayer.style.backgroundImage = 'none';
+        previewBgLayer.style.display = 'none';
+      }
+      previewBgLayer.style.opacity = String(meta.bgOpacity / 100);
+    }
+  }
+
+  function updateRemoveRowButton() {
+    if (btnRemoveRow) {
+      btnRemoveRow.disabled = tableData.length <= 1;
+    }
+  }
+
+  function isRichCellVisuallyEmpty(el) {
+    if (!el) return true;
+    var t = el.innerText || '';
+    return t.replace(/\u200b/g, '').trim().length === 0;
+  }
+
+  function updateRichEmptyClass(el) {
+    if (!el) return;
+    el.classList.toggle('is-empty', isRichCellVisuallyEmpty(el));
+  }
+
+  function syncRichTextFromCell(rowIndex, el) {
+    if (!el || rowIndex < 0 || rowIndex >= tableData.length) return;
+    var field = el.getAttribute('data-rich-field');
+    if (field === 'current') {
+      tableData[rowIndex].richCurrent = el.innerHTML;
+    } else {
+      tableData[rowIndex].richFirst = el.innerHTML;
+    }
+    saveToLocalStorage();
+  }
+
+  function createPlaceholderSvg() {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('width', '100');
+    svg.setAttribute('height', '88');
+    svg.setAttribute('viewBox', '0 0 100 88');
+    svg.setAttribute('aria-hidden', 'true');
+    var rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', '8');
+    rect.setAttribute('y', '6');
+    rect.setAttribute('width', '84');
+    rect.setAttribute('height', '76');
+    rect.setAttribute('rx', '6');
+    rect.setAttribute('fill', 'currentColor');
+    rect.setAttribute('opacity', '0.12');
+    svg.appendChild(rect);
+    return svg;
+  }
+
+  function attachRichCell(rowIndex, field, html, placeholder) {
+    var rich = document.createElement('div');
+    rich.className = 'rich-cell';
+    rich.contentEditable = 'true';
+    rich.dataset.rowIndex = String(rowIndex);
+    rich.dataset.richField = field;
+    rich.dataset.placeholder = placeholder;
+    rich.innerHTML = html;
+    updateRichEmptyClass(rich);
+
+    rich.addEventListener('focus', function () {
+      currentRichCell = rich;
+    });
+
+    rich.addEventListener('blur', function () {
+      updateRichEmptyClass(rich);
+      syncRichTextFromCell(rowIndex, rich);
+    });
+
+    rich.addEventListener('input', function () {
+      updateRichEmptyClass(rich);
+      syncRichTextFromCell(rowIndex, rich);
+    });
+
+    return rich;
+  }
+
+  function renderTable() {
+    if (!tableBody) return;
+    tableBody.innerHTML = '';
+    applyImageColPct();
+
+    tableData.forEach(function (row, rowIndex) {
+      var tr = document.createElement('tr');
+      tr.dataset.rowIndex = String(rowIndex);
+      if (row.rowMinHeight > 0) {
+        tr.style.minHeight = row.rowMinHeight + 'px';
+      }
+
+      var tdImg = document.createElement('td');
+      tdImg.className = 'cell-image';
+      if (row.rowMinHeight > 0) tdImg.style.minHeight = row.rowMinHeight + 'px';
+      var inner = document.createElement('div');
+      inner.className = 'cell-image-inner';
+
+      var slot = document.createElement('div');
+      slot.className = 'image-slot';
+
+      if (row.imgSrc) {
+        var img = document.createElement('img');
+        img.src = row.imgSrc;
+        img.alt = '角色';
+        img.addEventListener('click', function () {
+          openImageActionModal(rowIndex);
+        });
+        slot.appendChild(img);
+      } else {
+        var ph = document.createElement('div');
+        ph.className = 'placeholder-upload';
+        ph.setAttribute('role', 'button');
+        ph.setAttribute('tabindex', '0');
+        ph.appendChild(createPlaceholderSvg());
+        var hint = document.createElement('span');
+        hint.textContent = '点击上传（将先裁剪）';
+        ph.appendChild(hint);
+        ph.addEventListener('click', function () {
+          openFilePicker(rowIndex);
+        });
+        ph.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openFilePicker(rowIndex);
+          }
+        });
+        slot.appendChild(ph);
+      }
+
+      var controls = document.createElement('div');
+      controls.className = 'image-controls hide-on-export';
+
+      var cropBtn = document.createElement('button');
+      cropBtn.type = 'button';
+      cropBtn.className = 'btn-crop-img';
+      cropBtn.textContent = '重新裁剪';
+      cropBtn.title = '重新裁剪当前图';
+      cropBtn.disabled = !row.imgSrc;
+      cropBtn.addEventListener('click', function () {
+        openCropModal(rowIndex);
+      });
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn-delete-img';
+      delBtn.textContent = '删除图片';
+      delBtn.disabled = !row.imgSrc;
+      delBtn.addEventListener('click', function () {
+        tableData[rowIndex].imgSrc = '';
+        saveToLocalStorage();
+        renderTable();
+      });
+
+      controls.appendChild(cropBtn);
+      controls.appendChild(delBtn);
+      inner.appendChild(slot);
+      inner.appendChild(controls);
+      tdImg.appendChild(inner);
+      tr.appendChild(tdImg);
+
+      var tdFirst = document.createElement('td');
+      tdFirst.className = 'cell-text';
+      if (row.rowMinHeight > 0) tdFirst.style.minHeight = row.rowMinHeight + 'px';
+      tdFirst.appendChild(attachRichCell(rowIndex, 'first', row.richFirst, PL_FIRST));
+
+      var rowHandle = document.createElement('div');
+      rowHandle.className = 'row-resize-handle hide-on-export';
+      rowHandle.dataset.rowIndex = String(rowIndex);
+      rowHandle.title = '上下拖动调整本行高度';
+      tdFirst.appendChild(rowHandle);
+
+      tr.appendChild(tdFirst);
+
+      tableBody.appendChild(tr);
+    });
+
+    updateRemoveRowButton();
+  }
+
+  function openFilePicker(rowIndex) {
+    pendingUploadRowIndex = rowIndex;
+    if (hiddenFileInput) {
+      hiddenFileInput.value = '';
+      hiddenFileInput.click();
+    }
+  }
+
+  function openImageActionModal(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= tableData.length || !tableData[rowIndex].imgSrc) return;
+    pendingImageActionRowIndex = rowIndex;
+    if (imageActionModal) {
+      imageActionModal.classList.add('is-open');
+      imageActionModal.setAttribute('aria-hidden', 'false');
+    }
+  }
+
+  function closeImageActionModal() {
+    pendingImageActionRowIndex = -1;
+    if (imageActionModal) {
+      imageActionModal.classList.remove('is-open');
+      imageActionModal.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  function destroyCropperIfAny() {
+    if (cropperInstance && typeof cropperInstance.destroy === 'function') {
+      cropperInstance.destroy();
+    }
+    cropperInstance = null;
+  }
+
+  function closeCropModal() {
+    cropForceSrc = null;
+    if (cropModal) {
+      cropModal.classList.remove('is-open');
+      cropModal.setAttribute('aria-hidden', 'true');
+    }
+    destroyCropperIfAny();
+    if (cropTarget) {
+      cropTarget.removeAttribute('src');
+    }
+    cropRowIndex = -1;
+  }
+
+  /**
+   * @param {number} rowIndex
+   * @param {string} [forcedDataUrl] 新选图时传入，先裁剪再写入该行
+   */
+  function openCropModal(rowIndex, forcedDataUrl) {
+    if (typeof Cropper === 'undefined') {
+      alert('裁剪库未加载，请检查网络后重试。');
+      return;
+    }
+    if (rowIndex < 0 || rowIndex >= tableData.length) return;
+    var src =
+      forcedDataUrl != null && forcedDataUrl !== ''
+        ? forcedDataUrl
+        : tableData[rowIndex].imgSrc;
+    if (!src) return;
+    cropForceSrc = forcedDataUrl != null && forcedDataUrl !== '' ? forcedDataUrl : null;
+    cropRowIndex = rowIndex;
+    if (!cropTarget || !cropModal) return;
+
+    destroyCropperIfAny();
+    cropModal.classList.add('is-open');
+    cropModal.setAttribute('aria-hidden', 'false');
+
+    function startCropper() {
+      if (!cropModal.classList.contains('is-open')) return;
+      destroyCropperIfAny();
+      try {
+        cropperInstance = new Cropper(cropTarget, {
+          viewMode: 1,
+          dragMode: 'move',
+          autoCropArea: 0.85,
+          restore: false,
+          guides: true,
+          center: true,
+          highlight: false,
+          cropBoxMovable: true,
+          cropBoxResizable: true,
+          toggleDragModeOnDblclick: false,
+          background: true,
+          responsive: true,
+        });
+      } catch (e) {
+        console.error(e);
+        alert('无法初始化裁剪器，请换一张图片重试。');
+        closeCropModal();
+      }
+    }
+
+    cropTarget.onerror = function () {
+      cropTarget.onerror = null;
+      cropTarget.onload = null;
+      alert('图片无法加载，无法裁剪。');
+      closeCropModal();
+    };
+    cropTarget.onload = function () {
+      cropTarget.onload = null;
+      cropTarget.onerror = null;
+      requestAnimationFrame(startCropper);
+    };
+    cropTarget.src = src;
+  }
+
+  function confirmCrop() {
+    if (!cropperInstance || cropRowIndex < 0 || cropRowIndex >= tableData.length) {
+      closeCropModal();
+      return;
+    }
+    var canvas = null;
+    try {
+      canvas = cropperInstance.getCroppedCanvas({
+        maxWidth: CROP_MAX_EDGE,
+        maxHeight: CROP_MAX_EDGE,
+        imageSmoothingEnabled: true,
+        imageSmoothingQuality: 'high',
+      });
+    } catch (e) {
+      console.error(e);
+    }
+    if (!canvas || canvas.width === 0) {
+      alert('无法生成裁剪图（部分格式如 SVG 可能不支持）。');
+      return;
+    }
+    var dataUrl;
+    try {
+      dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    } catch (e) {
+      console.error(e);
+      alert('导出裁剪图失败，请尝试更换图片格式。');
+      return;
+    }
+    tableData[cropRowIndex].imgSrc = dataUrl;
+    saveToLocalStorage();
+    closeCropModal();
+    renderTable();
+  }
+
+  function readFileAsDataURL(file, callback) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      callback(reader.result);
+    };
+    reader.onerror = function () {
+      callback(null);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function onCharacterImageSelected(ev) {
+    var file = ev.target && ev.target.files && ev.target.files[0];
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) {
+      pendingUploadRowIndex = -1;
+      return;
+    }
+    readFileAsDataURL(file, function (dataUrl) {
+      if (dataUrl && pendingUploadRowIndex >= 0 && pendingUploadRowIndex < tableData.length) {
+        openCropModal(pendingUploadRowIndex, dataUrl);
+      }
+      pendingUploadRowIndex = -1;
+    });
+  }
+
+  function onBgImageSelected(ev) {
+    var file = ev.target && ev.target.files && ev.target.files[0];
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) return;
+    readFileAsDataURL(file, function (dataUrl) {
+      if (dataUrl) {
+        meta.bgImageSrc = dataUrl;
+        saveToLocalStorage();
+        applyPreviewStyles();
+      }
+    });
+  }
+
+  function ensureSelectionInCell(cell) {
+    if (!cell) return false;
+    var sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+    return cell.contains(sel.anchorNode);
+  }
+
+  function captureSelectionInCurrentCell() {
+    if (!currentRichCell) return;
+    var sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    try {
+      var r = sel.getRangeAt(0);
+      if (currentRichCell.contains(r.commonAncestorContainer)) {
+        savedSelectionRange = r.cloneRange();
+      }
+    } catch (e) {
+      savedSelectionRange = null;
+    }
+  }
+
+  function restoreSelectionInCell() {
+    if (!savedSelectionRange || !currentRichCell) return false;
+    try {
+      currentRichCell.focus();
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(savedSelectionRange);
+      return true;
+    } catch (e) {
+      savedSelectionRange = null;
+      return false;
+    }
+  }
+
+  function preventToolbarFocusSteal(el) {
+    if (!el) return;
+    el.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+    });
+  }
+
+  function focusCellEnd(cell) {
+    cell.focus();
+    var range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  function execOnRichCell(command, value) {
+    if (!currentRichCell || !document.body.contains(currentRichCell)) {
+      alert('请先在左侧预览中点击「初印象」单元格。');
+      return false;
+    }
+    currentRichCell.focus();
+    restoreSelectionInCell();
+    if (!ensureSelectionInCell(currentRichCell)) {
+      focusCellEnd(currentRichCell);
+    }
+    try {
+      document.execCommand('styleWithCSS', false, true);
+      return document.execCommand(command, false, value != null ? value : null);
+    } catch (e) {
+      console.warn('execCommand 失败:', command, e);
+      return false;
+    } finally {
+      var idx = parseInt(currentRichCell.dataset.rowIndex, 10);
+      if (!isNaN(idx)) syncRichTextFromCell(idx, currentRichCell);
+    }
+  }
+
+  function getFontSizeAtSelectionStart() {
+    var sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return 16;
+    var node = sel.anchorNode;
+    var el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    if (!el || !document.body.contains(el)) return 16;
+    var px = parseFloat(window.getComputedStyle(el).fontSize);
+    return isNaN(px) ? 16 : px;
+  }
+
+  function adjustFontSize(delta) {
+    if (!currentRichCell || !document.body.contains(currentRichCell)) {
+      alert('请先在左侧预览中点击「初印象」单元格。');
+      return;
+    }
+    currentRichCell.focus();
+    restoreSelectionInCell();
+    var sel = window.getSelection();
+    var hasRange = sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed;
+
+    if (hasRange && ensureSelectionInCell(currentRichCell)) {
+      var range = sel.getRangeAt(0);
+      var base = getFontSizeAtSelectionStart();
+      var next = Math.min(40, Math.max(10, Math.round(base + delta)));
+      try {
+        var span = document.createElement('span');
+        span.style.fontSize = next + 'px';
+        var contents = range.extractContents();
+        span.appendChild(contents);
+        range.insertNode(span);
+        sel.removeAllRanges();
+        var nr = document.createRange();
+        nr.selectNodeContents(span);
+        nr.collapse(false);
+        sel.addRange(nr);
+      } catch (e) {
+        adjustWholeCellFontSize(currentRichCell, delta);
+      }
+    } else {
+      adjustWholeCellFontSize(currentRichCell, delta);
+    }
+
+    var idx = parseInt(currentRichCell.dataset.rowIndex, 10);
+    if (!isNaN(idx)) syncRichTextFromCell(idx, currentRichCell);
+  }
+
+  function adjustWholeCellFontSize(cell, delta) {
+    var cs = window.getComputedStyle(cell);
+    var px = parseFloat(cs.fontSize) || 16;
+    var next = Math.min(40, Math.max(10, Math.round(px + delta)));
+    cell.style.fontSize = next + 'px';
+  }
+
+  function applyForeColor(hex) {
+    if (!currentRichCell || !document.body.contains(currentRichCell)) {
+      alert('请先在左侧预览中点击「初印象」单元格。');
+      return;
+    }
+    currentRichCell.focus();
+    restoreSelectionInCell();
+    if (!ensureSelectionInCell(currentRichCell)) {
+      focusCellEnd(currentRichCell);
+    }
+    try {
+      document.execCommand('styleWithCSS', false, true);
+      document.execCommand('foreColor', false, hex);
+    } catch (e) {
+      console.warn('foreColor 失败:', e);
+    }
+    var idx = parseInt(currentRichCell.dataset.rowIndex, 10);
+    if (!isNaN(idx)) syncRichTextFromCell(idx, currentRichCell);
+  }
+
+  function addRow() {
+    tableData.push(
+      normalizeRow({
+        imgSrc: '',
+        richFirst: '<p>新角色</p>',
+        richCurrent: '<p></p>',
+        rowMinHeight: 0,
+      })
+    );
+    saveToLocalStorage();
+    renderTable();
+  }
+
+  function removeLastRow() {
+    if (tableData.length <= 1) return;
+    tableData.pop();
+    saveToLocalStorage();
+    renderTable();
+  }
+
+  function exportImage() {
+    if (typeof html2canvas !== 'function') {
+      alert('html2canvas 未加载，请检查网络后重试。');
+      return;
+    }
+    if (!captureArea) {
+      alert('找不到预览区域。');
+      return;
+    }
+
+    var fmt = exportFormat && exportFormat.value === 'jpeg' ? 'jpeg' : 'png';
+    var mime = fmt === 'jpeg' ? 'image/jpeg' : 'image/png';
+    var bgHex = meta.bgBaseTone === 'black' ? '#0a0a0a' : '#ffffff';
+    var preset = getActiveExportPreset();
+
+    document.body.classList.add('is-exporting');
+
+    function runCapture() {
+      var sw = Math.max(1, captureArea.scrollWidth || captureArea.offsetWidth);
+      var targetW = preset.w || 1080;
+      var scale = Math.min(2.25, Math.max(1.5, Math.ceil(targetW / sw)));
+
+      html2canvas(captureArea, {
+        scale: scale,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: bgHex,
+        logging: false,
+        foreignObjectRendering: false,
+        onclone: function (clonedDoc) {
+          var el = clonedDoc.getElementById('captureArea');
+          if (!el) return;
+          el.style.opacity = '1';
+          el.style.visibility = 'visible';
+          el.style.transform = 'none';
+          var inner = el.querySelector('.preview-content');
+          if (inner) {
+            inner.style.opacity = '1';
+            inner.style.visibility = 'visible';
+          }
+          var layer = el.querySelector('.preview-bg-layer');
+          if (layer) layer.style.display = meta.bgImageSrc ? 'block' : 'none';
+        },
+      })
+        .then(function (canvas) {
+          if (!canvas || canvas.width < 2 || canvas.height < 2) {
+            alert('导出画布无效，请重试或刷新页面。');
+            return;
+          }
+          var out = resizeCanvasToExport(canvas, preset, bgHex);
+          var quality = fmt === 'jpeg' ? 0.92 : undefined;
+          var dataUrl =
+            quality != null ? out.toDataURL(mime, quality) : out.toDataURL(mime);
+          var link = document.createElement('a');
+          var suffix = preset.mode === 'fitWidth' ? preset.w + 'w' : preset.w + 'x' + preset.h;
+          link.download = '角色印象表_' + preset.id + '_' + suffix + '.' + (fmt === 'jpeg' ? 'jpg' : 'png');
+          link.href = dataUrl;
+          link.click();
+        })
+        .catch(function (err) {
+          console.error(err);
+          alert('导出失败：' + (err && err.message ? err.message : '请稍后重试。'));
+        })
+        .finally(function () {
+          document.body.classList.remove('is-exporting');
+        });
+    }
+
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        setTimeout(runCapture, 80);
+      });
+    });
+  }
+
+  function bindMetaInputs() {
+    if (workTitle) {
+      workTitle.addEventListener('input', function () {
+        meta.workTitle = workTitle.value;
+        saveToLocalStorage();
+      });
+    }
+    if (filledBy) {
+      filledBy.addEventListener('input', function () {
+        meta.filledBy = filledBy.value;
+        saveToLocalStorage();
+      });
+    }
+    if (madeBy) {
+      madeBy.addEventListener('input', function () {
+        meta.madeBy = madeBy.value;
+        saveToLocalStorage();
+      });
+    }
+    if (bgBaseTone) {
+      bgBaseTone.addEventListener('change', function () {
+        meta.bgBaseTone = bgBaseTone.value;
+        saveToLocalStorage();
+        applyPreviewStyles();
+      });
+    }
+    if (bgOpacity) {
+      bgOpacity.addEventListener('input', function () {
+        var v = parseInt(bgOpacity.value, 10);
+        if (isNaN(v)) return;
+        meta.bgOpacity = v;
+        if (bgOpacityVal) bgOpacityVal.textContent = v + '%';
+        if (previewBgLayer) previewBgLayer.style.opacity = String(v / 100);
+        saveToLocalStorage();
+      });
+    }
+    if (btnBgImage && hiddenBgInput) {
+      btnBgImage.addEventListener('click', function () {
+        hiddenBgInput.value = '';
+        hiddenBgInput.click();
+      });
+    }
+    if (hiddenBgInput) {
+      hiddenBgInput.addEventListener('change', onBgImageSelected);
+    }
+    if (btnClearBg) {
+      btnClearBg.addEventListener('click', function () {
+        meta.bgImageSrc = '';
+        saveToLocalStorage();
+        applyPreviewStyles();
+      });
+    }
+    if (exportPreset) {
+      exportPreset.addEventListener('change', function () {
+        meta.exportPreset = exportPreset.value;
+        if (!EXPORT_PRESETS[meta.exportPreset]) meta.exportPreset = 'xhs_3_4';
+        saveToLocalStorage();
+        applyExportPresetFrame();
+      });
+    }
+  }
+
+  function bindImageModals() {
+    if (imageActionModal) {
+      imageActionModal.addEventListener('click', function (ev) {
+        if (ev.target === imageActionModal) closeImageActionModal();
+      });
+    }
+    if (btnImageReplace) {
+      btnImageReplace.addEventListener('click', function () {
+        var r = pendingImageActionRowIndex;
+        closeImageActionModal();
+        if (r >= 0) openFilePicker(r);
+      });
+    }
+    if (btnImageCrop) {
+      btnImageCrop.addEventListener('click', function () {
+        var r = pendingImageActionRowIndex;
+        closeImageActionModal();
+        if (r >= 0) openCropModal(r);
+      });
+    }
+    if (btnImageActionCancel) {
+      btnImageActionCancel.addEventListener('click', closeImageActionModal);
+    }
+    if (cropModal) {
+      cropModal.addEventListener('click', function (ev) {
+        if (ev.target === cropModal) closeCropModal();
+      });
+    }
+    if (btnCropCancel) btnCropCancel.addEventListener('click', closeCropModal);
+    if (btnCropConfirm) btnCropConfirm.addEventListener('click', confirmCrop);
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      if (cropModal && cropModal.classList.contains('is-open')) {
+        ev.preventDefault();
+        closeCropModal();
+      } else if (imageActionModal && imageActionModal.classList.contains('is-open')) {
+        ev.preventDefault();
+        closeImageActionModal();
+      }
+    });
+  }
+
+  function onColResizeMove(e) {
+    if (!colDrag) return;
+    var d = ((e.clientX - colDrag.startX) / colDrag.tableW) * 100;
+    meta.imageColWidthPct =
+      Math.round(Math.min(62, Math.max(22, colDrag.startPct + d)) * 10) / 10;
+    applyImageColPct();
+  }
+
+  function onColResizeEnd() {
+    document.removeEventListener('mousemove', onColResizeMove);
+    document.removeEventListener('mouseup', onColResizeEnd);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    if (colDrag) {
+      colDrag = null;
+      saveToLocalStorage();
+    }
+  }
+
+  function bindColResize() {
+    if (!colResizeHandle || !mainTable) return;
+    colResizeHandle.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var rect = mainTable.getBoundingClientRect();
+      colDrag = {
+        startX: e.clientX,
+        startPct: meta.imageColWidthPct,
+        tableW: Math.max(120, rect.width),
+      };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onColResizeMove);
+      document.addEventListener('mouseup', onColResizeEnd);
+    });
+  }
+
+  function onRowResizeMove(e) {
+    if (!rowDrag) return;
+    var dy = e.clientY - rowDrag.startY;
+    var next = Math.round(Math.max(72, rowDrag.startMin + dy));
+    tableData[rowDrag.rowIndex].rowMinHeight = next;
+    var tr = tableBody && tableBody.querySelector('tr[data-row-index="' + rowDrag.rowIndex + '"]');
+    if (tr) {
+      tr.style.minHeight = next + 'px';
+      var tds = tr.querySelectorAll('td');
+      for (var i = 0; i < tds.length; i++) {
+        tds[i].style.minHeight = next + 'px';
+      }
+    }
+  }
+
+  function onRowResizeEnd() {
+    document.removeEventListener('mousemove', onRowResizeMove);
+    document.removeEventListener('mouseup', onRowResizeEnd);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    if (rowDrag) {
+      rowDrag = null;
+      saveToLocalStorage();
+    }
+  }
+
+  function bindRowResize() {
+    if (!tableBody) return;
+    tableBody.addEventListener('mousedown', function (e) {
+      var h = e.target.closest('.row-resize-handle');
+      if (!h || !tableBody.contains(h)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var ri = parseInt(h.dataset.rowIndex, 10);
+      if (isNaN(ri) || ri < 0 || ri >= tableData.length) return;
+      var tr = h.closest('tr');
+      var rect = tr ? tr.getBoundingClientRect() : null;
+      var base =
+        tableData[ri].rowMinHeight > 0
+          ? tableData[ri].rowMinHeight
+          : rect
+            ? Math.round(rect.height)
+            : 100;
+      rowDrag = { rowIndex: ri, startY: e.clientY, startMin: base };
+      document.body.style.cursor = 'ns-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onRowResizeMove);
+      document.addEventListener('mouseup', onRowResizeEnd);
+    });
+  }
+
+  function bindEvents() {
+    bindMetaInputs();
+    bindImageModals();
+    bindColResize();
+    bindRowResize();
+    if (btnAddRow) btnAddRow.addEventListener('click', addRow);
+    if (btnRemoveRow) btnRemoveRow.addEventListener('click', removeLastRow);
+    if (btnExport) btnExport.addEventListener('click', exportImage);
+    if (hiddenFileInput) hiddenFileInput.addEventListener('change', onCharacterImageSelected);
+
+    if (btnBold) btnBold.addEventListener('click', function () { execOnRichCell('bold'); });
+    if (btnItalic) btnItalic.addEventListener('click', function () { execOnRichCell('italic'); });
+    if (btnUnderline) btnUnderline.addEventListener('click', function () { execOnRichCell('underline'); });
+    if (btnFontInc) btnFontInc.addEventListener('click', function () { adjustFontSize(2); });
+    if (btnFontDec) btnFontDec.addEventListener('click', function () { adjustFontSize(-2); });
+    if (colorPicker) {
+      colorPicker.addEventListener('mousedown', captureSelectionInCurrentCell);
+      colorPicker.addEventListener('input', function () {
+        applyForeColor(colorPicker.value);
+      });
+      colorPicker.addEventListener('change', function () {
+        applyForeColor(colorPicker.value);
+      });
+    }
+
+    preventToolbarFocusSteal(btnBold);
+    preventToolbarFocusSteal(btnItalic);
+    preventToolbarFocusSteal(btnUnderline);
+    preventToolbarFocusSteal(btnFontInc);
+    preventToolbarFocusSteal(btnFontDec);
+  }
+
+  function init() {
+    var loaded = loadFromLocalStorage() || loadLegacyV1();
+    if (loaded) {
+      meta = normalizeMeta(loaded.meta || {});
+      tableData = loaded.rows;
+    } else {
+      meta = getDefaultMeta();
+      tableData = defaultRows();
+    }
+    pushMetaToInputs();
+    applyPreviewStyles();
+    applyExportPresetFrame();
+    bindEvents();
+    renderTable();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

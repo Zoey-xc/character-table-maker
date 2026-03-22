@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="角色初印象表格：裁剪配图、拖动格大小、导出社交平台尺寸图片">
+  <title>角色初印象表格制作</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-bar hide-on-export">
+      <h1 class="app-bar-title">角色初印象表格制作</h1>
+      <p class="app-bar-hint">左侧为预览（与导出一致），右侧为编辑与格式工具</p>
+    </header>
+
+    <div class="split-layout">
+      <main class="preview-column">
+        <div class="preview-preset-badge hide-on-export" id="previewPresetBadge" role="status">小红书 笔记 3:4 · 1080×1440</div>
+        <div class="preview-device" id="previewDevice">
+          <div class="preview-device-notch hide-on-export" aria-hidden="true"></div>
+          <div class="preview-device-screen" id="previewDeviceScreen">
+            <div class="preview-scroll">
+              <div class="preview-sheet" id="captureArea">
+                <div class="preview-bg-layer" id="previewBgLayer" aria-hidden="true"></div>
+                <div class="preview-content">
+                  <header class="sheet-header">
+                    <div class="sheet-title-wrap">
+                      <input type="text" id="workTitle" class="input-title" placeholder="点击输入作品名" autocomplete="off" aria-label="作品名">
+                    </div>
+                    <div class="sheet-meta">
+                      <label class="meta-item">
+                        <span class="meta-label">填表人</span>
+                        <input type="text" id="filledBy" class="input-meta" placeholder="选填" autocomplete="name">
+                      </label>
+                      <label class="meta-item">
+                        <span class="meta-label">做表人</span>
+                        <input type="text" id="madeBy" class="input-meta" placeholder="选填" autocomplete="off">
+                      </label>
+                    </div>
+                  </header>
+
+                  <div class="table-outer">
+                    <div class="table-scroll-inner">
+                      <table class="impression-table" id="mainTable">
+                        <colgroup>
+                          <col id="colImageWidth" class="col-w-image" style="width: 38%">
+                          <col class="col-w-text" style="width: 62%">
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th scope="col" class="col-image corner-cell">
+                              <span class="th-label">角色</span>
+                              <div class="col-resize-handle hide-on-export" id="colResizeHandle" title="左右拖动调整图片列宽" role="separator"></div>
+                            </th>
+                            <th scope="col" class="col-text head-first">初印象</th>
+                          </tr>
+                        </thead>
+                        <tbody id="tableBody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <aside class="editor-panel hide-on-export" aria-label="编辑面板">
+        <div class="panel-section">
+          <h2 class="panel-heading">富文本</h2>
+          <p class="panel-tip">请先在左侧预览中点击「初印象」单元格，再使用下列格式。</p>
+          <div class="toolbar-rich" aria-label="富文本格式">
+            <button type="button" id="btnBold" class="btn btn-icon" title="加粗"><strong>B</strong></button>
+            <button type="button" id="btnItalic" class="btn btn-icon" title="斜体"><em>I</em></button>
+            <button type="button" id="btnUnderline" class="btn btn-icon" title="下划线"><span class="u">U</span></button>
+            <button type="button" id="btnFontInc" class="btn btn-icon" title="字体增大">A+</button>
+            <button type="button" id="btnFontDec" class="btn btn-icon" title="字体减小">A−</button>
+            <label class="color-label" title="文字颜色">
+              <span class="color-label-text">颜色</span>
+              <input type="color" id="colorPicker" value="#333333" aria-label="文字颜色">
+            </label>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-heading">格子大小</h2>
+          <p class="panel-tip">在预览表头「角色」与「初印象」之间的竖条上<strong>左右拖动</strong>可调整图片列宽；每行文字格底部的横条<strong>上下拖动</strong>可调整该行高度。导入图片会先进入裁剪再填入格内，图片随列宽缩放。</p>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-heading">页面背景</h2>
+          <label class="control-row">
+            <span class="control-label">底色</span>
+            <select id="bgBaseTone" class="select-inline" title="预览区底色">
+              <option value="white">白色</option>
+              <option value="black">黑色</option>
+            </select>
+          </label>
+          <div class="btn-row">
+            <button type="button" id="btnBgImage" class="btn">导入背景图</button>
+            <button type="button" id="btnClearBg" class="btn" title="清除背景图">清除背景图</button>
+          </div>
+          <label class="control-row">
+            <span class="control-label">背景图透明度</span>
+            <input type="range" id="bgOpacity" min="0" max="100" value="40" aria-valuemin="0" aria-valuemax="100">
+            <span class="control-value" id="bgOpacityVal">40%</span>
+          </label>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-heading">角色行</h2>
+          <div class="btn-row">
+            <button type="button" id="btnAddRow" class="btn btn-primary">添加角色</button>
+            <button type="button" id="btnRemoveRow" class="btn btn-danger-outline">删除末行</button>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-heading">导出尺寸（预览框比例一致）</h2>
+          <p class="panel-tip">按小红书 / 微博等常用像素导出；固定比例时整表会缩放并留白边以适配画幅。</p>
+          <label class="control-row control-row--stack">
+            <span class="control-label control-label--full">画幅预设</span>
+            <select id="exportPreset" class="select-format select-format--block" title="导出与左侧预览框比例">
+              <option value="xhs_3_4">小红书 笔记 3:4（1080×1440）</option>
+              <option value="xhs_4_5">小红书 竖图 4:5（1080×1350）</option>
+              <option value="xhs_1_1">小红书 / 微博 方形 1:1（1080×1080）</option>
+              <option value="weibo_long">微博 长图（宽 1080，高度随内容）</option>
+              <option value="story_9_16">竖屏动态 9:16（1080×1920）</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-heading">导出文件</h2>
+          <div class="toolbar-export">
+            <label class="toolbar-label" for="exportFormat">格式</label>
+            <select id="exportFormat" class="select-format" title="导出图片格式">
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option>
+            </select>
+            <button type="button" id="btnExport" class="btn btn-export">导出为图片</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <input type="file" id="hiddenFileInput" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp,image/svg+xml" hidden aria-hidden="true">
+  <input type="file" id="hiddenBgInput" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" hidden aria-hidden="true">
+
+  <div id="imageActionModal" class="modal-overlay hide-on-export" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-sm" role="dialog" aria-modal="true" aria-labelledby="imageActionTitle">
+      <h3 id="imageActionTitle" class="modal-title">角色图片</h3>
+      <p class="modal-desc">选择操作</p>
+      <div class="modal-actions-col">
+        <button type="button" id="btnImageReplace" class="btn btn-primary btn-block">更换图片</button>
+        <button type="button" id="btnImageCrop" class="btn btn-block">裁剪当前图</button>
+        <button type="button" id="btnImageActionCancel" class="btn btn-block btn-muted">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="cropModal" class="modal-overlay hide-on-export" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-crop" role="dialog" aria-modal="true" aria-labelledby="cropModalTitle">
+      <h3 id="cropModalTitle" class="modal-title">裁剪图片</h3>
+      <p class="modal-desc">拖动选区与边角调整，确认后写入预览（长边最大约 1200px）</p>
+      <div class="crop-wrap">
+        <img id="cropTarget" alt="待裁剪图片">
+      </div>
+      <div class="modal-actions-row">
+        <button type="button" id="btnCropCancel" class="btn">取消</button>
+        <button type="button" id="btnCropConfirm" class="btn btn-primary">确认裁剪</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
