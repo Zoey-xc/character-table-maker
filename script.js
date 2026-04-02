@@ -107,6 +107,11 @@
   var btnCropCancel = document.getElementById('btnCropCancel');
   var btnCropConfirm = document.getElementById('btnCropConfirm');
 
+  // 添加移动端导出图片模态框相关元素
+  var exportedImageModal = document.getElementById('exportedImageModal');
+  var exportedImageDisplay = document.getElementById('exportedImageDisplay');
+  var btnCloseExportModal = document.getElementById('btnCloseExportModal');
+
   var PL_FIRST = '双击编辑初印象…';
 
   function saveToLocalStorage() {
@@ -869,6 +874,11 @@
     }, 100);
   }
 
+  // 检测是否为移动设备
+  function isMobileDevice() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  }
+
   async function exportImage() {
     const captureEl = document.getElementById('captureArea');
     if (!captureEl) {
@@ -1007,9 +1017,21 @@
       });
 
       if (blob && blob.size > 0) {
+        // 创建对象URL
+        const imageUrl = URL.createObjectURL(blob);
         const suffix = preset.mode === 'fitWidth' ? preset.w + 'w' : preset.w + 'x' + preset.h;
         const filename = `角色印象表_${presetId}_${suffix}.${format === 'jpeg' ? 'jpg' : 'png'}`;
-        downloadBlob(blob, filename, format);
+        
+        // 检测是否为移动设备
+        if (isMobileDevice()) {
+          // 移动端：显示导出的图片，提示用户长按保存
+          exportedImageDisplay.src = imageUrl;
+          exportedImageModal.classList.add('is-open');
+          exportedImageModal.setAttribute('aria-hidden', 'false');
+        } else {
+          // 桌面端：继续原来的下载方式
+          downloadBlob(blob, filename, format);
+        }
       } else {
         alert('导出失败：生成的图片为空');
       }
@@ -1116,6 +1138,22 @@
     }
     if (btnCropCancel) btnCropCancel.addEventListener('click', closeCropModal);
     if (btnCropConfirm) btnCropConfirm.addEventListener('click', confirmCrop);
+    
+    // 绑定导出图片模态框事件
+    if (exportedImageModal) {
+      exportedImageModal.addEventListener('click', function (ev) {
+        if (ev.target === exportedImageModal) {
+          exportedImageModal.classList.remove('is-open');
+          exportedImageModal.setAttribute('aria-hidden', 'true');
+        }
+      });
+    }
+    if (btnCloseExportModal) {
+      btnCloseExportModal.addEventListener('click', function() {
+        exportedImageModal.classList.remove('is-open');
+        exportedImageModal.setAttribute('aria-hidden', 'true');
+      });
+    }
 
     document.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape') return;
@@ -1125,6 +1163,10 @@
       } else if (imageActionModal && imageActionModal.classList.contains('is-open')) {
         ev.preventDefault();
         closeImageActionModal();
+      } else if (exportedImageModal && exportedImageModal.classList.contains('is-open')) {
+        ev.preventDefault();
+        exportedImageModal.classList.remove('is-open');
+        exportedImageModal.setAttribute('aria-hidden', 'true');
       }
     });
   }

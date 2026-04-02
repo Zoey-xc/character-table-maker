@@ -183,3 +183,17 @@
   <script src="script.js"></script>
 </body>
 </html>
+
+<!-- 导出图片预览模态框 -->
+<div id="exportedImageModal" class="modal-overlay hide-on-export" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-lg" role="dialog" aria-modal="true" aria-labelledby="exportedImageTitle">
+    <h3 id="exportedImageTitle" class="modal-title">导出成功</h3>
+    <p class="modal-desc">长按下方图片可保存到相册</p>
+    <div class="exported-image-container">
+      <img id="exportedImageDisplay" alt="导出的角色印象表" src="">
+    </div>
+    <div class="modal-actions-row">
+      <button type="button" id="btnCloseExportModal" class="btn btn-block">关闭</button>
+    </div>
+  </div>
+</div>

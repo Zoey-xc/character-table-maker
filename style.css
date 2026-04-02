@@ -833,6 +833,11 @@ body {
   max-width: min(960px, 100%);
 }
 
+/* 添加新的模态框尺寸 */
+.modal-dialog-lg {
+  max-width: min(800px, 90vw);
+}
+
 .modal-title {
   margin: 0 0 6px;
   font-size: 1.1rem;
@@ -887,6 +892,26 @@ body {
 .crop-wrap .cropper-wrap-box,
 .crop-wrap .cropper-canvas img {
   max-height: min(70vh, 560px);
+}
+
+/* 导出图片显示容器 */
+.exported-image-container {
+  width: 100%;
+  text-align: center;
+  margin: 16px 0;
+  padding: 12px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+}
+
+.exported-image-container img {
+  max-width: 100%;
+  max-height: 70vh;
+  display: block;
+  margin: 0 auto;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 /* ========== 导出 ========== */
