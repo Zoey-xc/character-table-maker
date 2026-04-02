@@ -107,10 +107,10 @@
   var btnCropCancel = document.getElementById('btnCropCancel');
   var btnCropConfirm = document.getElementById('btnCropConfirm');
 
-  // 添加移动端导出图片模态框相关元素
-  var exportedImageModal = document.getElementById('exportedImageModal');
-  var exportedImageDisplay = document.getElementById('exportedImageDisplay');
-  var btnCloseExportModal = document.getElementById('btnCloseExportModal');
+  // 移动端导出图片模态框相关元素将在init函数中初始化
+  var exportedImageModal = null;
+  var exportedImageDisplay = null;
+  var btnCloseExportModal = null;
 
   var PL_FIRST = '双击编辑初印象…';
 
@@ -1024,6 +1024,12 @@
         
         // 检测是否为移动设备
         if (isMobileDevice()) {
+          // 确保元素已存在
+          if (!exportedImageDisplay || !exportedImageModal) {
+            console.error('导出图片模态框元素未找到');
+            alert('导出功能初始化失败，请刷新页面重试');
+            return;
+          }
           // 移动端：显示导出的图片，提示用户长按保存
           exportedImageDisplay.src = imageUrl;
           exportedImageModal.classList.add('is-open');
@@ -1300,6 +1306,12 @@
       meta = getDefaultMeta();
       tableData = defaultRows();
     }
+    
+    // 初始化移动端导出图片模态框元素
+    exportedImageModal = document.getElementById('exportedImageModal');
+    exportedImageDisplay = document.getElementById('exportedImageDisplay');
+    btnCloseExportModal = document.getElementById('btnCloseExportModal');
+    
     pushMetaToInputs();
     applyPreviewStyles();
     applyExportPresetFrame();
